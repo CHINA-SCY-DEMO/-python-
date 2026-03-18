@@ -23,32 +23,29 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # ==================== 智能数据库路径配置（适配 Streamlit Cloud） ====================
 def get_db_path():
-    """
-    智能检测运行环境并返回合适的数据库路径：
-    1. 如果设置了 RESUME_DB_PATH 环境变量，使用指定路径
-    2. Streamlit Cloud 免费版：使用 /tmp/ 目录（注意：重启后数据会丢失！）
-    3. 本地环境：使用项目目录下的 data/ 文件夹
-    """
+    env_path = os.getenv("RESUME_DB_PATH")
+    if env_path:
+        try:
+            dir_path = os.path.dirname(env_path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+            return env_path
+        except PermissionError:
+            st.warning(f"⚠️ 无法访问环境变量指定的路径: {env_path}，将使用临时目录")
     
-    # 检测是否在 Streamlit Cloud
     is_streamlit_cloud = os.getenv("STREAMLIT_SHARING") or os.getenv("STREAMLIT_CLOUD")
-    
-    # 优先级2：Streamlit Cloud 使用 /tmp/（唯一可写目录）
     if is_streamlit_cloud:
         tmp_path = "/tmp/resume_system.db"
-        # 在 Streamlit Cloud 显示警告（仅一次）
         if 'showed_cloud_warning' not in st.session_state:
-            st.info("☁️ Streamlit Cloud 模式：数据保存在临时目录，应用重启后数据会丢失。如需持久化，请配置外部数据库。", icon="ℹ️")
+            st.info("☁️ Streamlit Cloud 模式：数据保存在临时目录，应用重启后数据会丢失。", icon="ℹ️")
             st.session_state.showed_cloud_warning = True
         return tmp_path
     
-    # 优先级3：本地开发环境（项目目录下的 data/ 文件夹）
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         db_dir = os.path.join(base_dir, "data")
         os.makedirs(db_dir, exist_ok=True)
         
-        # 自动创建 .gitignore 防止误提交数据库
         gitignore_path = os.path.join(db_dir, ".gitignore")
         if not os.path.exists(gitignore_path):
             try:
@@ -59,13 +56,11 @@ def get_db_path():
         
         return os.path.join(db_dir, "resume_system.db")
     except PermissionError:
-        # 如果本地也没权限（极少见），回退到 /tmp
         st.warning("⚠️ 无法写入项目目录，使用系统临时目录", icon="⚠️")
         return "/tmp/resume_system.db"
 
 DB_PATH = get_db_path()
 
-# 检查是否存在旧版数据库并自动迁移（仅在本地环境）
 try:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     old_db_path = os.path.join(base_dir, "resume_system.db")
@@ -74,35 +69,30 @@ try:
             shutil.copy2(old_db_path, DB_PATH)
             st.success("✅ 已自动迁移旧数据库数据")
 except Exception as e:
-    pass  # 静默处理，不影响主程序
+    pass
 
 # =======================================================
 
-# 配置切换：本地 Ollama vs 云端 API
 USE_LOCAL_OLLAMA = os.getenv("USE_LOCAL_OLLAMA", "false").lower() == "true"
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
 def call_ai_chat(messages, temperature=0.1):
-    """统一的AI调用接口"""
     if USE_LOCAL_OLLAMA:
         return call_ollama_chat(messages, temperature)
     else:
         return call_deepseek_api(messages, temperature)
 
 def call_deepseek_api(messages, temperature=0.1):
-    """调用 DeepSeek 官方 API（成本低，效果相当）"""
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
     }
-    
     payload = {
         "model": "deepseek-chat",
         "messages": messages,
         "temperature": temperature,
         "max_tokens": 4096
     }
-    
     try:
         resp = requests.post(
             "https://api.deepseek.com/chat/completions",
@@ -116,26 +106,19 @@ def call_deepseek_api(messages, temperature=0.1):
         st.error(f"API 调用失败: {e}")
         return None
 
-# ==================== Ollama AI 配置 ====================
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 MODEL_NAME = "deepseek-r1:14b"
-# =======================================================
 
-# 数据库初始化
 def init_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        
-        # 用户表
         c.execute('''CREATE TABLE IF NOT EXISTS users
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       username TEXT UNIQUE NOT NULL,
                       password TEXT NOT NULL,
                       email TEXT,
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
-        # 简历记录表 - 增加结构化数据字段
         c.execute('''CREATE TABLE IF NOT EXISTS resumes
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       user_id INTEGER,
@@ -148,8 +131,6 @@ def init_db():
                       analysis TEXT,
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                       FOREIGN KEY (user_id) REFERENCES users(id))''')
-        
-        # 优化记录表
         c.execute('''CREATE TABLE IF NOT EXISTS optimizations
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       user_id INTEGER,
@@ -159,18 +140,15 @@ def init_db():
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                       FOREIGN KEY (user_id) REFERENCES users(id),
                       FOREIGN KEY (resume_id) REFERENCES resumes(id))''')
-        
         conn.commit()
         conn.close()
     except Exception as e:
         st.error(f"数据库初始化失败: {e}")
         st.info("提示：在 Streamlit Cloud 上，请确保使用的是 /tmp/ 目录路径")
 
-# 密码加密
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# 用户注册
 def register_user(username, password, email):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -186,7 +164,6 @@ def register_user(username, password, email):
     except Exception as e:
         return False, f"注册失败: {str(e)}"
 
-# 用户登录
 def login_user(username, password):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -203,7 +180,6 @@ def login_user(username, password):
         st.error(f"登录查询失败: {e}")
         return False, None, None
 
-# 保存简历记录（增强版，保存结构化数据）
 def save_resume(user_id, filename, content, structured_data, score, total_score, score_details, analysis):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -223,7 +199,6 @@ def save_resume(user_id, filename, content, structured_data, score, total_score,
         st.error(f"保存简历失败: {e}")
         return None
 
-# 获取用户简历历史
 def get_user_resumes(user_id):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -238,7 +213,6 @@ def get_user_resumes(user_id):
         st.error(f"获取历史记录失败: {e}")
         return []
 
-# 获取单条简历详情
 def get_resume_detail(resume_id):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -261,7 +235,6 @@ def get_resume_detail(resume_id):
         st.error(f"获取详情失败: {e}")
         return None
 
-# 保存优化记录
 def save_optimization(user_id, resume_id, job_desc, optimized_content):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -274,11 +247,8 @@ def save_optimization(user_id, resume_id, job_desc, optimized_content):
     except Exception as e:
         st.error(f"保存优化记录失败: {e}")
 
-# -------------------- AI 功能：文本提取 --------------------
 def extract_text_from_pdf(file):
-    """使用pdfplumber从PDF提取文本（支持文件对象或路径）"""
     try:
-        # 如果是Streamlit上传的文件对象
         if hasattr(file, 'read'):
             file.seek(0)
             with pdfplumber.open(file) as pdf:
@@ -288,7 +258,7 @@ def extract_text_from_pdf(file):
                     if page_text:
                         text += page_text + "\n"
                 return text.strip()
-        else:  # 如果是文件路径
+        else:
             with pdfplumber.open(file) as pdf:
                 text = ""
                 for page in pdf.pages:
@@ -300,7 +270,6 @@ def extract_text_from_pdf(file):
         return f"PDF解析错误: {str(e)}"
 
 def parse_docx(file):
-    """解析Word文档"""
     try:
         doc = docx.Document(file)
         text = ""
@@ -310,9 +279,7 @@ def parse_docx(file):
     except Exception as e:
         return f"Word解析错误: {str(e)}"
 
-# -------------------- AI 功能：Ollama调用 --------------------
 def call_ollama_chat(messages, temperature=0.1):
-    """使用Ollama Chat API进行对话"""
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
@@ -333,7 +300,6 @@ def call_ollama_chat(messages, temperature=0.1):
         st.error(f"AI模型调用失败: {e}")
         return None
 
-# -------------------- AI 功能：简历解析 --------------------
 RESUME_PARSE_PROMPT = """
 你是一个专业的简历解析助手。请从简历文本中提取以下信息，并严格按照指定的JSON格式输出。
 
@@ -404,17 +370,14 @@ RESUME_PARSE_PROMPT = """
 """
 
 def parse_resume_with_ollama(resume_text, retries=3):
-    """使用Ollama本地模型解析简历文本"""
     messages = [
         {"role": "system", "content": RESUME_PARSE_PROMPT},
         {"role": "user", "content": f"请解析以下简历文本：\n\n{resume_text}"}
     ]
-    
     for attempt in range(retries):
         try:
             response = call_ai_chat(messages, temperature=0.1)
             if response:
-                # 清理可能的markdown代码块
                 response = response.strip()
                 if response.startswith("```json"):
                     response = response[7:]
@@ -423,7 +386,6 @@ def parse_resume_with_ollama(resume_text, retries=3):
                 if response.endswith("```"):
                     response = response[:-3]
                 response = response.strip()
-                
                 return json.loads(response)
         except Exception as e:
             if attempt < retries - 1:
@@ -433,7 +395,6 @@ def parse_resume_with_ollama(resume_text, retries=3):
     return get_empty_structure()
 
 def get_empty_structure():
-    """返回空的简历结构"""
     return {
         "personal_info": {"name": "", "phone": "", "gender": "", "birth_date": "", "graduation_date": ""},
         "education": [],
@@ -445,23 +406,14 @@ def get_empty_structure():
         "other_info": {"interests": "", "skills": ""}
     }
 
-# -------------------- AI 功能：简历评分 --------------------
 def calculate_resume_score(structured_data):
-    """
-    根据字段完整度计算简历评分（每个词条1分）
-    返回: (总分, 详细评分, 满分)
-    """
     score = 0
     score_details = {}
-
-    # 1. 个人基本信息 (5分)
     pi = structured_data.get("personal_info", {})
     basic_fields = ["name", "phone", "gender", "birth_date", "graduation_date"]
     basic_score = sum(1 for field in basic_fields if pi.get(field))
     score += basic_score
     score_details["个人基本信息"] = {"得分": basic_score, "满分": 5}
-
-    # 2. 教育经历 (5分/条)
     edu_list = structured_data.get("education", [])
     edu_score = 0
     for edu in edu_list:
@@ -469,8 +421,6 @@ def calculate_resume_score(structured_data):
         edu_score += sum(1 for field in edu_fields if edu.get(field))
     score += edu_score
     score_details["教育经历"] = {"得分": edu_score, "满分": len(edu_list) * 5}
-
-    # 3. 实习经历 (4分/条)
     intern_list = structured_data.get("internship", [])
     intern_score = 0
     for intern in intern_list:
@@ -478,8 +428,6 @@ def calculate_resume_score(structured_data):
         intern_score += sum(1 for field in intern_fields if intern.get(field))
     score += intern_score
     score_details["实习经历"] = {"得分": intern_score, "满分": len(intern_list) * 4}
-
-    # 4. 组织及活动经历 (4分/条)
     act_list = structured_data.get("activities", [])
     act_score = 0
     for act in act_list:
@@ -487,8 +435,6 @@ def calculate_resume_score(structured_data):
         act_score += sum(1 for field in act_fields if act.get(field))
     score += act_score
     score_details["组织及活动经历"] = {"得分": act_score, "满分": len(act_list) * 4}
-
-    # 5. 项目经验 (4分/条)
     proj_list = structured_data.get("projects", [])
     proj_score = 0
     for proj in proj_list:
@@ -496,8 +442,6 @@ def calculate_resume_score(structured_data):
         proj_score += sum(1 for field in proj_fields if proj.get(field))
     score += proj_score
     score_details["项目经验"] = {"得分": proj_score, "满分": len(proj_list) * 4}
-
-    # 6. 获奖证书 (3分/条)
     cert_list = structured_data.get("certificates", [])
     cert_score = 0
     for cert in cert_list:
@@ -505,35 +449,20 @@ def calculate_resume_score(structured_data):
         cert_score += sum(1 for field in cert_fields if cert.get(field))
     score += cert_score
     score_details["获奖证书"] = {"得分": cert_score, "满分": len(cert_list) * 3}
-
-    # 7. 求职意向 (1分)
     ji = structured_data.get("job_intention", {})
     job_score = 1 if ji.get("target_position") else 0
     score += job_score
     score_details["求职意向"] = {"得分": job_score, "满分": 1}
-
-    # 8. 其他信息 (2分)
     oi = structured_data.get("other_info", {})
     other_fields = ["interests", "skills"]
     other_score = sum(1 for field in other_fields if oi.get(field))
     score += other_score
     score_details["其他信息"] = {"得分": other_score, "满分": 2}
-
-    # 计算总分
-    total = (5 +  # 个人基本信息
-             len(edu_list) * 5 +  # 教育经历
-             len(intern_list) * 4 +  # 实习经历
-             len(act_list) * 4 +  # 组织及活动经历
-             len(proj_list) * 4 +  # 项目经验
-             len(cert_list) * 3 +  # 获奖证书
-             1 +  # 求职意向
-             2)   # 其他信息
-
+    total = (5 + len(edu_list) * 5 + len(intern_list) * 4 + len(act_list) * 4 + 
+             len(proj_list) * 4 + len(cert_list) * 3 + 1 + 2)
     return score, score_details, total
 
-# -------------------- AI 功能：简历优化 --------------------
 def build_optimization_prompt(resume_text, job_desc):
-    """构建简历优化提示词"""
     return f"""你是一位资深的猎头顾问，精通简历优化和职业规划。请根据我提供的【目标职位招聘要求】，帮我优化和完善我的【原始简历内容】。
 
 具体要求：
@@ -552,11 +481,8 @@ def build_optimization_prompt(resume_text, job_desc):
 """
 
 def save_text_as_pdf(text, output_path):
-    """将纯文本保存为PDF"""
     c = canvas.Canvas(output_path, pagesize=A4)
     width, height = A4
-
-    # 尝试使用中文字体
     try:
         font_path = "C:/Windows/Fonts/simhei.ttf"
         if os.path.exists(font_path):
@@ -566,12 +492,10 @@ def save_text_as_pdf(text, output_path):
             c.setFont('Helvetica', 12)
     except:
         c.setFont('Helvetica', 12)
-
     left_margin = 20 * mm
     top_margin = 20 * mm
     line_height = 5 * mm
     y = height - top_margin
-
     for line in text.split('\n'):
         wrapped = textwrap.wrap(line, width=100)
         if not wrapped:
@@ -588,13 +512,11 @@ def save_text_as_pdf(text, output_path):
             y -= line_height
     c.save()
 
-# 初始化数据库
 try:
     init_db()
 except Exception as e:
     st.error(f"应用启动失败，无法初始化数据库: {e}")
 
-# Streamlit UI配置
 st.set_page_config(
     page_title="智能简历识别与优化系统",
     page_icon="📄",
@@ -602,7 +524,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS样式
+# CSS 样式 - 已删除 .login-container 相关样式
 st.markdown("""
     <style>
     .main {
@@ -642,24 +564,16 @@ st.markdown("""
         border-radius: 0 10px 10px 0;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    .login-container {
-        max-width: 400px;
-        margin: 0 auto;
-        padding: 40px;
-        background-color: white;
-        border-radius: 20px;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-    }
     .scoring-rules {
         background-color: #f0f2f6;
         padding: 15px;
         border-radius: 10px;
         margin-bottom: 20px;
     }
+    /* 删除的 .login-container 样式不再存在 */
     </style>
     """, unsafe_allow_html=True)
 
-# 初始化session state
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.user_id = None
@@ -667,13 +581,13 @@ if 'authenticated' not in st.session_state:
     st.session_state.current_page = 'login'
     st.session_state.current_resume_id = None
 
-# 登录/注册页面
+# 登录/注册页面 - 已删除 login-container 的 div 包装
 def show_auth_page():
     st.markdown("<div style='height: 50px;'></div>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
+        # 删除了 <div class='login-container'> 的包裹
         st.markdown("<h2 style='text-align: center; color: #333;'>📄 智能简历系统</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666;'>AI驱动的简历识别与优化</p>", unsafe_allow_html=True)
         
@@ -717,14 +631,10 @@ def show_auth_page():
                             st.success(msg + "请登录")
                         else:
                             st.error(msg)
-        
-        st.markdown("</div>", unsafe_allow_html=True)
+        # 删除了 </div> 的结束标签
 
-# AI 评分可视化
 def display_resume_score(score, score_details, total):
-    """可视化显示AI评分结果"""
     percentage = (score / total * 100) if total > 0 else 0
-
     if percentage >= 80:
         color = "green"
         level = "优秀"
@@ -746,7 +656,6 @@ def display_resume_score(score, score_details, total):
     </div>
     """, unsafe_allow_html=True)
 
-    # 显示各项详细得分
     st.subheader("📊 详细评分（每个词条1分）")
     col1, col2 = st.columns(2)
     items = list(score_details.items())
@@ -764,9 +673,7 @@ def display_resume_score(score, score_details, total):
             st.write(f"**{category}**: {details['得分']}/{details['满分']}")
             st.progress(progress)
 
-# 显示结构化数据摘要
 def display_resume_summary(structured_data):
-    """显示简历结构化摘要"""
     col1, col2 = st.columns(2)
     with col1:
         st.write("**👤 基本信息**")
@@ -782,9 +689,7 @@ def display_resume_summary(structured_data):
         st.write(f"- 项目经验: {len(structured_data.get('projects', []))} 条")
         st.write(f"- 技能证书: {len(structured_data.get('certificates', []))} 条")
 
-# 主应用界面
 def show_main_app():
-    # 侧边栏
     with st.sidebar:
         st.markdown(f"### 👤 当前用户: {st.session_state.username}")
         st.markdown("---")
@@ -797,31 +702,23 @@ def show_main_app():
             st.session_state.username = None
             st.rerun()
         
-        # ==================== 用户数据仪表板 ====================
         st.markdown("---")
         st.markdown("### 📊 我的数据概览")
         
-        # 获取用户统计数据
         try:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            
-            # 统计总简历数、平均分、最近活动时间
             c.execute("""SELECT COUNT(*), AVG(CAST(score AS FLOAT)/total_score*100), MAX(created_at) 
                         FROM resumes WHERE user_id=?""", 
                      (st.session_state.user_id,))
             total_count, avg_score_pct, last_time = c.fetchone()
-            
-            # 统计本月分析数
             current_month = datetime.now().strftime("%Y-%m")
             c.execute("""SELECT COUNT(*) FROM resumes 
                          WHERE user_id=? AND strftime('%Y-%m', created_at)=?""",
                      (st.session_state.user_id, current_month))
             month_count = c.fetchone()[0]
-            
             conn.close()
             
-            # 统计卡片 - 使用列布局
             metric_col1, metric_col2 = st.columns(2)
             with metric_col1:
                 st.metric("📄 简历总数", int(total_count) if total_count else 0)
@@ -829,7 +726,6 @@ def show_main_app():
                 display_avg = f"{avg_score_pct:.1f}%" if avg_score_pct else "0%"
                 st.metric("⭐ 平均完成度", display_avg)
             
-            # 辅助信息
             if month_count:
                 st.caption(f"本月新增: {month_count} 份")
             if last_time:
@@ -838,16 +734,13 @@ def show_main_app():
         except Exception as e:
             st.error(f"数据加载失败: {e}")
         
-        # 快捷操作中心
         st.markdown("### ⚡ 快捷操作")
         
-        # 使用session_state来跟踪当前展开的部分
         if 'show_trend' not in st.session_state:
             st.session_state.show_trend = False
         if 'show_export' not in st.session_state:
             st.session_state.show_export = False
             
-        # 快捷按钮组
         col_q1, col_q2 = st.columns(2)
         with col_q1:
             if st.button("📈 评分趋势", use_container_width=True, key="btn_trend"):
@@ -858,7 +751,6 @@ def show_main_app():
                 st.session_state.show_export = not st.session_state.show_export
                 st.session_state.show_trend = False
         
-        # 显示评分趋势图
         if st.session_state.show_trend:
             try:
                 conn = sqlite3.connect(DB_PATH)
@@ -870,7 +762,6 @@ def show_main_app():
                     ORDER BY created_at ASC 
                     LIMIT 20""", conn, params=(st.session_state.user_id,))
                 conn.close()
-                
                 if not df.empty and len(df) > 1:
                     st.line_chart(df.set_index('created_at')['percentage'], use_container_width=True)
                     st.caption("📉 最近20次分析完成度趋势")
@@ -879,7 +770,6 @@ def show_main_app():
             except Exception as e:
                 st.error(f"图表加载失败: {e}")
         
-        # 显示数据导出选项
         if st.session_state.show_export:
             try:
                 conn = sqlite3.connect(DB_PATH)
@@ -891,7 +781,6 @@ def show_main_app():
                     WHERE user_id=? 
                     ORDER BY created_at DESC""", conn, params=(st.session_state.user_id,))
                 conn.close()
-                
                 if not df.empty:
                     csv = df.to_csv(index=False).encode('utf-8')
                     st.download_button(
@@ -907,7 +796,6 @@ def show_main_app():
             except Exception as e:
                 st.error(f"导出失败: {e}")
         
-        # 数据清理功能（放在expander中防止误触）
         with st.expander("🗑️ 高级操作", expanded=False):
             st.warning("⚠️ 危险区域", icon="⚠️")
             if st.button("清空所有历史记录", type="secondary", use_container_width=True):
@@ -922,7 +810,6 @@ def show_main_app():
                     st.success("✅ 已清空历史记录")
                     st.rerun()
         
-        # 每日智能提示
         st.markdown("### 💡 智能提示")
         tips = [
             "📌 PDF格式简历识别效果最佳，避免扫描版图片PDF",
@@ -934,22 +821,18 @@ def show_main_app():
             "📝 教育经历建议填写GPA和荣誉，能显著提升专业度",
             "🎨 保持简历在一页以内，AI优化会自动精简内容"
         ]
-        # 根据日期选择提示，保证同一天显示相同内容
         day_index = datetime.now().day % len(tips)
         daily_tip = tips[day_index]
         st.info(daily_tip)
         
-        # 页脚信息
         st.markdown("---")
         st.caption(f"🤖 AI Resume System v2.0 | User: {st.session_state.username}")
         st.caption(f"⏱️ {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-    # ==================== AI简历识别与打分 ====================
     if menu == "📊 AI简历识别与打分":
         st.title("📊 AI智能简历识别与评分")
         st.markdown("**流程**: 上传简历 → AI解析 → 智能评分 → 保存记录")
         
-        # 显示评分规则
         with st.expander("📖 查看AI评分规则详解", expanded=False):
             st.markdown("""
             ### 评分规则（每个词条1分）
@@ -974,7 +857,6 @@ def show_main_app():
             uploaded_file = st.file_uploader("支持 PDF 或 Word 格式", type=['pdf', 'docx'])
             
             if uploaded_file:
-                # 提取文本
                 file_extension = uploaded_file.name.split('.')[-1].lower()
                 with st.spinner("🔍 正在提取文本..."):
                     if file_extension == 'pdf':
@@ -986,13 +868,11 @@ def show_main_app():
                     st.success("✅ 文本提取成功")
                     st.text_area("提取的原始文本（前500字）", content[:500] + "..." if len(content) > 500 else content, height=150)
                     
-                    # AI解析按钮
                     if st.button("🤖 开始AI解析与评分", type="primary"):
                         with st.spinner("🧠 AI正在深度解析简历结构..."):
                             structured_data = parse_resume_with_ollama(content)
                             score, score_details, total = calculate_resume_score(structured_data)
                             
-                            # 保存到session state
                             st.session_state['current_structured_data'] = structured_data
                             st.session_state['current_content'] = content
                             st.session_state['current_score'] = score
@@ -1007,19 +887,13 @@ def show_main_app():
         with col2:
             if st.session_state.get('analysis_done'):
                 st.subheader("📋 AI解析结果")
-                
-                # 显示评分
                 display_resume_score(
                     st.session_state['current_score'],
                     st.session_state['current_score_details'],
                     st.session_state['current_total']
                 )
-                
-                # 显示结构化摘要
                 with st.expander("查看结构化解析详情", expanded=True):
                     display_resume_summary(st.session_state['current_structured_data'])
-                
-                # 保存按钮
                 if st.button("💾 保存分析结果到历史记录"):
                     resume_id = save_resume(
                         st.session_state.user_id,
@@ -1035,14 +909,10 @@ def show_main_app():
                         st.session_state['current_resume_id'] = resume_id
                         st.success(f"✅ 已保存到历史记录 (ID: {resume_id})")
 
-    # ==================== AI简历优化系统 ====================
     elif menu == "✨ AI简历优化系统":
         st.title("✨ AI简历优化助手")
         st.markdown("**流程**: 选择历史简历 或 上传新简历 → 输入目标岗位JD → AI优化 → 下载优化版")
-        
-        # 选择简历来源
         source = st.radio("选择简历来源", ["从历史记录选择", "上传新简历"], horizontal=True)
-        
         content = None
         structured_data = None
         resume_id = None
@@ -1062,8 +932,7 @@ def show_main_app():
                             display_resume_summary(structured_data)
             else:
                 st.warning("暂无历史记录，请上传新简历")
-        
-        else:  # 上传新简历
+        else:
             uploaded_file = st.file_uploader("上传简历文件", type=['pdf', 'docx'])
             if uploaded_file:
                 file_extension = uploaded_file.name.split('.')[-1].lower()
@@ -1072,10 +941,8 @@ def show_main_app():
                         content = extract_text_from_pdf(uploaded_file)
                     else:
                         content = parse_docx(uploaded_file)
-                
                 if content and not content.startswith("解析错误"):
                     st.success("文本提取成功")
-                    # 可选：先解析保存
                     if st.checkbox("同时保存到历史记录"):
                         with st.spinner("AI解析中..."):
                             structured_data = parse_resume_with_ollama(content)
@@ -1088,7 +955,6 @@ def show_main_app():
                             if resume_id:
                                 st.success(f"已保存 (ID: {resume_id})")
         
-        # 输入JD并优化
         if content:
             st.divider()
             st.subheader("🎯 输入目标岗位JD")
@@ -1097,7 +963,6 @@ def show_main_app():
                 height=200,
                 placeholder="例如：\n岗位职责：\n1. 负责前端开发...\n任职要求：\n1. 熟悉React...\n2. 3年以上经验..."
             )
-            
             if job_desc.strip() and st.button("🚀 开始AI优化", type="primary"):
                 with st.spinner("🧠 AI正在根据JD优化简历..."):
                     prompt = build_optimization_prompt(content, job_desc)
@@ -1105,68 +970,43 @@ def show_main_app():
                         {"role": "system", "content": "你是一位资深的猎头顾问，精通简历优化和职业规划。"},
                         {"role": "user", "content": prompt}
                     ]
-                    
                     optimized_text = call_ai_chat(messages)
-                    
                     if optimized_text:
                         st.session_state['optimized_text'] = optimized_text
                         st.session_state['optimization_done'] = True
-                        
-                        # 如果有关联的resume_id，保存优化记录
                         if resume_id:
                             save_optimization(st.session_state.user_id, resume_id, job_desc, optimized_text)
             
-            # 显示优化结果
             if st.session_state.get('optimization_done'):
                 st.divider()
                 st.subheader("✨ AI优化结果")
-                
                 tab1, tab2 = st.tabs(["优化后简历", "对比查看"])
-                
                 with tab1:
                     st.text_area("优化后的简历内容", st.session_state['optimized_text'], height=400)
-                    
-                    # 下载选项
                     col_dl1, col_dl2 = st.columns(2)
                     with col_dl1:
                         txt_bytes = st.session_state['optimized_text'].encode('utf-8')
-                        st.download_button(
-                            label="📥 下载为TXT",
-                            data=txt_bytes,
-                            file_name="optimized_resume.txt",
-                            mime="text/plain"
-                        )
+                        st.download_button(label="📥 下载为TXT", data=txt_bytes, file_name="optimized_resume.txt", mime="text/plain")
                     with col_dl2:
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                             save_text_as_pdf(st.session_state['optimized_text'], tmp.name)
                             tmp.seek(0)
                             pdf_bytes = tmp.read()
                         os.unlink(tmp.name)
-                        st.download_button(
-                            label="📥 下载为PDF",
-                            data=pdf_bytes,
-                            file_name="optimized_resume.pdf",
-                            mime="application/pdf"
-                        )
-                
+                        st.download_button(label="📥 下载为PDF", data=pdf_bytes, file_name="optimized_resume.pdf", mime="application/pdf")
                 with tab2:
                     col_orig, col_opt = st.columns(2)
                     with col_orig:
                         st.markdown("**原始简历**")
-                        st.text_area("原始内容", content[:800] + "..." if len(content) > 800 else content, 
-                                   height=400, disabled=True)
+                        st.text_area("原始内容", content[:800] + "..." if len(content) > 800 else content, height=400, disabled=True)
                     with col_opt:
                         st.markdown("**AI优化后**")
-                        st.text_area("优化内容", st.session_state['optimized_text'][:800] + "...", 
-                                   height=400, disabled=True)
+                        st.text_area("优化内容", st.session_state['optimized_text'][:800] + "...", height=400, disabled=True)
 
-    # ==================== 历史记录 ====================
-    else:  # 历史记录
+    else:
         st.title("📜 我的简历分析历史")
         st.markdown("---")
-        
         resumes = get_user_resumes(st.session_state.user_id)
-        
         if resumes:
             for resume in resumes:
                 rid, filename, score, total_score, created_at = resume
@@ -1188,8 +1028,6 @@ def show_main_app():
                     with col4:
                         if st.button("查看详情", key=f"view_{rid}"):
                             st.session_state[f"show_detail_{rid}"] = not st.session_state.get(f"show_detail_{rid}", False)
-                    
-                    # 详情展开
                     if st.session_state.get(f"show_detail_{rid}", False):
                         detail = get_resume_detail(rid)
                         if detail:
@@ -1199,12 +1037,10 @@ def show_main_app():
                                 if st.button("加载此简历进行优化", key=f"opt_{rid}"):
                                     st.session_state.current_page = 'optimization'
                                     st.rerun()
-                    
                     st.divider()
         else:
             st.info("暂无分析记录，快去上传第一份简历吧！")
 
-# 主程序入口
 if not st.session_state.authenticated:
     show_auth_page()
 else:
