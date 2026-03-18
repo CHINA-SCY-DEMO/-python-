@@ -21,60 +21,72 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# ==================== 智能数据库路径配置 ====================
+# ==================== 智能数据库路径配置（适配 Streamlit Cloud） ====================
 def get_db_path():
     """
     智能检测运行环境并返回合适的数据库路径：
     1. 如果设置了 RESUME_DB_PATH 环境变量，使用指定路径
-    2. 如果在 Streamlit Cloud 且支持持久化，使用 .streamlit/storage
-    3. 默认使用本地 data/ 目录（自动创建 .gitignore）
+    2. Streamlit Cloud 免费版：使用 /tmp/ 目录（注意：重启后数据会丢失！）
+    3. 本地环境：使用项目目录下的 data/ 文件夹
     """
     
     # 优先级1：环境变量强制指定
     env_path = os.getenv("RESUME_DB_PATH")
     if env_path:
-        os.makedirs(os.path.dirname(env_path) if os.path.dirname(env_path) else '.', exist_ok=True)
-        return env_path
+        try:
+            # 尝试创建目录
+            dir_path = os.path.dirname(env_path)
+            if dir_path:  # 确保不是空字符串
+                os.makedirs(dir_path, exist_ok=True)
+            return env_path
+        except PermissionError:
+            st.warning(f"⚠️ 无法访问环境变量指定的路径: {env_path}，将使用临时目录")
     
-    # 优先级2：Streamlit Cloud 持久化存储（如果可用）
-    try:
-        # Streamlit Cloud 的持久化路径（1.28+ 版本支持）
-        cloud_path = os.path.join(st.__path__[0], '..', '..', '.streamlit', 'storage', 'resume_system.db')
-        if os.path.exists(os.path.dirname(cloud_path)):
-            os.makedirs(os.path.dirname(cloud_path), exist_ok=True)
-            return cloud_path
-    except:
-        pass
+    # 检测是否在 Streamlit Cloud
+    is_streamlit_cloud = os.getenv("STREAMLIT_SHARING") or os.getenv("STREAMLIT_CLOUD")
+    
+    # 优先级2：Streamlit Cloud 使用 /tmp/（唯一可写目录）
+    if is_streamlit_cloud:
+        tmp_path = "/tmp/resume_system.db"
+        # 在 Streamlit Cloud 显示警告（仅一次）
+        if 'showed_cloud_warning' not in st.session_state:
+            st.info("☁️ Streamlit Cloud 模式：数据保存在临时目录，应用重启后数据会丢失。如需持久化，请配置外部数据库。", icon="ℹ️")
+            st.session_state.showed_cloud_warning = True
+        return tmp_path
     
     # 优先级3：本地开发环境（项目目录下的 data/ 文件夹）
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    db_dir = os.path.join(base_dir, "data")
-    os.makedirs(db_dir, exist_ok=True)
-    
-    # 自动创建 .gitignore 防止误提交数据库
-    gitignore_path = os.path.join(db_dir, ".gitignore")
-    if not os.path.exists(gitignore_path):
-        with open(gitignore_path, 'w') as f:
-            f.write("*.db\n*.sqlite3\n*.sqlite\n")
-    
-    return os.path.join(db_dir, "resume_system.db")
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_dir = os.path.join(base_dir, "data")
+        os.makedirs(db_dir, exist_ok=True)
+        
+        # 自动创建 .gitignore 防止误提交数据库
+        gitignore_path = os.path.join(db_dir, ".gitignore")
+        if not os.path.exists(gitignore_path):
+            try:
+                with open(gitignore_path, 'w') as f:
+                    f.write("*.db\n*.sqlite3\n*.sqlite\n")
+            except:
+                pass
+        
+        return os.path.join(db_dir, "resume_system.db")
+    except PermissionError:
+        # 如果本地也没权限（极少见），回退到 /tmp
+        st.warning("⚠️ 无法写入项目目录，使用系统临时目录", icon="⚠️")
+        return "/tmp/resume_system.db"
 
 DB_PATH = get_db_path()
 
-# 如果是 Streamlit Cloud，显示数据存储提示
-if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_CLOUD"):
-    st.sidebar.caption(f"💾 数据存储: Cloud")
-else:
-    st.sidebar.caption(f"💾 数据存储: Local")
-
-# 检查是否存在旧版数据库并自动迁移（根目录 -> data/）
-OLD_DB_PATH = os.path.join(os.path.dirname(__file__), "resume_system.db")
-if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH) and 'data' in DB_PATH:
-    try:
-        shutil.copy2(OLD_DB_PATH, DB_PATH)
-        st.sidebar.success("✅ 已自动迁移旧数据")
-    except Exception as e:
-        st.sidebar.error(f"⚠️ 数据迁移失败: {e}")
+# 检查是否存在旧版数据库并自动迁移（仅在本地环境）
+try:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    old_db_path = os.path.join(base_dir, "resume_system.db")
+    if os.path.exists(old_db_path) and DB_PATH != old_db_path and os.path.exists(os.path.dirname(DB_PATH)):
+        if not os.path.exists(DB_PATH) or os.path.getsize(old_db_path) > os.path.getsize(DB_PATH):
+            shutil.copy2(old_db_path, DB_PATH)
+            st.success("✅ 已自动迁移旧数据库数据")
+except Exception as e:
+    pass  # 静默处理，不影响主程序
 
 # =======================================================
 
@@ -123,44 +135,48 @@ MODEL_NAME = "deepseek-r1:14b"
 
 # 数据库初始化
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # 用户表
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT UNIQUE NOT NULL,
-                  password TEXT NOT NULL,
-                  email TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # 简历记录表 - 增加结构化数据字段
-    c.execute('''CREATE TABLE IF NOT EXISTS resumes
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  filename TEXT,
-                  content TEXT,
-                  structured_data TEXT,
-                  score INTEGER,
-                  total_score INTEGER,
-                  score_details TEXT,
-                  analysis TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (user_id) REFERENCES users(id))''')
-    
-    # 优化记录表
-    c.execute('''CREATE TABLE IF NOT EXISTS optimizations
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER,
-                  resume_id INTEGER,
-                  job_desc TEXT,
-                  optimized_content TEXT,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (user_id) REFERENCES users(id),
-                  FOREIGN KEY (resume_id) REFERENCES resumes(id))''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # 用户表
+        c.execute('''CREATE TABLE IF NOT EXISTS users
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      username TEXT UNIQUE NOT NULL,
+                      password TEXT NOT NULL,
+                      email TEXT,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        
+        # 简历记录表 - 增加结构化数据字段
+        c.execute('''CREATE TABLE IF NOT EXISTS resumes
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER,
+                      filename TEXT,
+                      content TEXT,
+                      structured_data TEXT,
+                      score INTEGER,
+                      total_score INTEGER,
+                      score_details TEXT,
+                      analysis TEXT,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      FOREIGN KEY (user_id) REFERENCES users(id))''')
+        
+        # 优化记录表
+        c.execute('''CREATE TABLE IF NOT EXISTS optimizations
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER,
+                      resume_id INTEGER,
+                      job_desc TEXT,
+                      optimized_content TEXT,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      FOREIGN KEY (user_id) REFERENCES users(id),
+                      FOREIGN KEY (resume_id) REFERENCES resumes(id))''')
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"数据库初始化失败: {e}")
+        st.info("提示：在 Streamlit Cloud 上，请确保使用的是 /tmp/ 目录路径")
 
 # 密码加密
 def hash_password(password):
@@ -184,72 +200,91 @@ def register_user(username, password, email):
 
 # 用户登录
 def login_user(username, password):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    hashed_pw = hash_password(password)
-    c.execute("SELECT id, username FROM users WHERE username=? AND password=?",
-             (username, hashed_pw))
-    result = c.fetchone()
-    conn.close()
-    if result:
-        return True, result[0], result[1]
-    return False, None, None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        hashed_pw = hash_password(password)
+        c.execute("SELECT id, username FROM users WHERE username=? AND password=?",
+                 (username, hashed_pw))
+        result = c.fetchone()
+        conn.close()
+        if result:
+            return True, result[0], result[1]
+        return False, None, None
+    except Exception as e:
+        st.error(f"登录查询失败: {e}")
+        return False, None, None
 
 # 保存简历记录（增强版，保存结构化数据）
 def save_resume(user_id, filename, content, structured_data, score, total_score, score_details, analysis):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""INSERT INTO resumes (user_id, filename, content, structured_data, score, total_score, score_details, analysis) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-             (user_id, filename, content, 
-              json.dumps(structured_data, ensure_ascii=False),
-              score, total_score,
-              json.dumps(score_details, ensure_ascii=False),
-              json.dumps(analysis, ensure_ascii=False)))
-    conn.commit()
-    resume_id = c.lastrowid
-    conn.close()
-    return resume_id
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO resumes (user_id, filename, content, structured_data, score, total_score, score_details, analysis) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (user_id, filename, content, 
+                  json.dumps(structured_data, ensure_ascii=False),
+                  score, total_score,
+                  json.dumps(score_details, ensure_ascii=False),
+                  json.dumps(analysis, ensure_ascii=False)))
+        conn.commit()
+        resume_id = c.lastrowid
+        conn.close()
+        return resume_id
+    except Exception as e:
+        st.error(f"保存简历失败: {e}")
+        return None
 
 # 获取用户简历历史
 def get_user_resumes(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT id, filename, score, total_score, created_at 
-                 FROM resumes WHERE user_id=? ORDER BY created_at DESC""",
-             (user_id,))
-    results = c.fetchall()
-    conn.close()
-    return results
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT id, filename, score, total_score, created_at 
+                     FROM resumes WHERE user_id=? ORDER BY created_at DESC""",
+                 (user_id,))
+        results = c.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        st.error(f"获取历史记录失败: {e}")
+        return []
 
 # 获取单条简历详情
 def get_resume_detail(resume_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""SELECT content, structured_data, score, total_score, score_details, analysis 
-                 FROM resumes WHERE id=?""", (resume_id,))
-    result = c.fetchone()
-    conn.close()
-    if result:
-        return {
-            'content': result[0],
-            'structured_data': json.loads(result[1]) if result[1] else {},
-            'score': result[2],
-            'total_score': result[3],
-            'score_details': json.loads(result[4]) if result[4] else {},
-            'analysis': json.loads(result[5]) if result[5] else []
-        }
-    return None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""SELECT content, structured_data, score, total_score, score_details, analysis 
+                     FROM resumes WHERE id=?""", (resume_id,))
+        result = c.fetchone()
+        conn.close()
+        if result:
+            return {
+                'content': result[0],
+                'structured_data': json.loads(result[1]) if result[1] else {},
+                'score': result[2],
+                'total_score': result[3],
+                'score_details': json.loads(result[4]) if result[4] else {},
+                'analysis': json.loads(result[5]) if result[5] else []
+            }
+        return None
+    except Exception as e:
+        st.error(f"获取详情失败: {e}")
+        return None
 
 # 保存优化记录
 def save_optimization(user_id, resume_id, job_desc, optimized_content):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""INSERT INTO optimizations (user_id, resume_id, job_desc, optimized_content) 
-                 VALUES (?, ?, ?, ?)""",
-             (user_id, resume_id, job_desc, optimized_content))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""INSERT INTO optimizations (user_id, resume_id, job_desc, optimized_content) 
+                     VALUES (?, ?, ?, ?)""",
+                 (user_id, resume_id, job_desc, optimized_content))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"保存优化记录失败: {e}")
 
 # -------------------- AI 功能：文本提取 --------------------
 def extract_text_from_pdf(file):
@@ -566,7 +601,10 @@ def save_text_as_pdf(text, output_path):
     c.save()
 
 # 初始化数据库
-init_db()
+try:
+    init_db()
+except Exception as e:
+    st.error(f"应用启动失败，无法初始化数据库: {e}")
 
 # Streamlit UI配置
 st.set_page_config(
@@ -1005,8 +1043,9 @@ def show_main_app():
                         st.session_state['current_score_details'],
                         []
                     )
-                    st.session_state['current_resume_id'] = resume_id
-                    st.success(f"✅ 已保存到历史记录 (ID: {resume_id})")
+                    if resume_id:
+                        st.session_state['current_resume_id'] = resume_id
+                        st.success(f"✅ 已保存到历史记录 (ID: {resume_id})")
 
     # ==================== AI简历优化系统 ====================
     elif menu == "✨ AI简历优化系统":
@@ -1058,7 +1097,8 @@ def show_main_app():
                                 uploaded_file.name,
                                 content, structured_data, score, total, score_details, []
                             )
-                            st.success(f"已保存 (ID: {resume_id})")
+                            if resume_id:
+                                st.success(f"已保存 (ID: {resume_id})")
         
         # 输入JD并优化
         if content:
