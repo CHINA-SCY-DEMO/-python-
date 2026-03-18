@@ -30,18 +30,6 @@ def get_db_path():
     3. 本地环境：使用项目目录下的 data/ 文件夹
     """
     
-    # 优先级1：环境变量强制指定
-    env_path = os.getenv("RESUME_DB_PATH")
-    if env_path:
-        try:
-            # 尝试创建目录
-            dir_path = os.path.dirname(env_path)
-            if dir_path:  # 确保不是空字符串
-                os.makedirs(dir_path, exist_ok=True)
-            return env_path
-        except PermissionError:
-            st.warning(f"⚠️ 无法访问环境变量指定的路径: {env_path}，将使用临时目录")
-    
     # 检测是否在 Streamlit Cloud
     is_streamlit_cloud = os.getenv("STREAMLIT_SHARING") or os.getenv("STREAMLIT_CLOUD")
     
