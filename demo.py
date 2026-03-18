@@ -5,7 +5,7 @@ import pdfplumber
 import docx
 import re
 import json
-import os
+ import os
 import tempfile
 import requests
 import textwrap
@@ -720,7 +720,7 @@ def show_main_app():
             st.session_state.username = None
             st.rerun()
         
-        # ==================== 新增：用户数据仪表板（替换原有的AI状态显示）====================
+        # ==================== 用户数据仪表板 ====================
         st.markdown("---")
         st.markdown("### 📊 我的数据概览")
         
@@ -844,21 +844,6 @@ def show_main_app():
                     conn.close()
                     st.success("✅ 已清空历史记录")
                     st.rerun()
-        
-        # 系统设置信息（折叠面板，替代原来的状态显示）
-        st.markdown("### ⚙️ 系统配置")
-        with st.expander("查看配置", expanded=False):
-            current_mode = "🖥️ 本地Ollama (DeepSeek-R1:14b)" if USE_LOCAL_OLLAMA else "☁️ DeepSeek API (V3)"
-            st.write(f"**当前模式:** {current_mode}")
-            
-            if not USE_LOCAL_OLLAMA:
-                api_status = "✅ 已配置" if DEEPSEEK_API_KEY else "❌ 未配置环境变量"
-                st.write(f"**API状态:** {api_status}")
-            
-            st.divider()
-            st.caption("💡 切换方式：")
-            st.code("USE_LOCAL_OLLAMA=true\nDEEPSEEK_API_KEY=sk-xxx", language="bash")
-            st.caption("修改环境变量后重启服务生效")
         
         # 每日智能提示
         st.markdown("### 💡 智能提示")
