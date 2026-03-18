@@ -5,13 +5,14 @@ import pdfplumber
 import docx
 import re
 import json
-import os  # 修复：确保这行没有缩进，与前面对齐
+import os
 import tempfile
 import requests
 import textwrap
 import time
-import random  # 新增：用于随机提示
-import pandas as pd  # 新增：用于数据导出和图表
+import random
+import pandas as pd
+import shutil
 from datetime import datetime
 from typing import Dict, List, Tuple
 from reportlab.lib.pagesizes import A4
@@ -20,20 +21,61 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# ==================== 数据库路径配置 ====================
-# 支持通过环境变量 RESUME_DB_PATH 自定义路径，默认使用当前目录下的 data 文件夹
-DB_PATH = os.getenv("RESUME_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "resume_system.db"))
+# ==================== 智能数据库路径配置 ====================
+def get_db_path():
+    """
+    智能检测运行环境并返回合适的数据库路径：
+    1. 如果设置了 RESUME_DB_PATH 环境变量，使用指定路径
+    2. 如果在 Streamlit Cloud 且支持持久化，使用 .streamlit/storage
+    3. 默认使用本地 data/ 目录（自动创建 .gitignore）
+    """
+    
+    # 优先级1：环境变量强制指定
+    env_path = os.getenv("RESUME_DB_PATH")
+    if env_path:
+        os.makedirs(os.path.dirname(env_path) if os.path.dirname(env_path) else '.', exist_ok=True)
+        return env_path
+    
+    # 优先级2：Streamlit Cloud 持久化存储（如果可用）
+    try:
+        # Streamlit Cloud 的持久化路径（1.28+ 版本支持）
+        cloud_path = os.path.join(st.__path__[0], '..', '..', '.streamlit', 'storage', 'resume_system.db')
+        if os.path.exists(os.path.dirname(cloud_path)):
+            os.makedirs(os.path.dirname(cloud_path), exist_ok=True)
+            return cloud_path
+    except:
+        pass
+    
+    # 优先级3：本地开发环境（项目目录下的 data/ 文件夹）
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    db_dir = os.path.join(base_dir, "data")
+    os.makedirs(db_dir, exist_ok=True)
+    
+    # 自动创建 .gitignore 防止误提交数据库
+    gitignore_path = os.path.join(db_dir, ".gitignore")
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, 'w') as f:
+            f.write("*.db\n*.sqlite3\n*.sqlite\n")
+    
+    return os.path.join(db_dir, "resume_system.db")
 
-# 检查是否存在旧版数据库（当前目录下的 resume_system.db），提示用户迁移
+DB_PATH = get_db_path()
+
+# 如果是 Streamlit Cloud，显示数据存储提示
+if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_CLOUD"):
+    st.sidebar.caption(f"💾 数据存储: Cloud")
+else:
+    st.sidebar.caption(f"💾 数据存储: Local")
+
+# 检查是否存在旧版数据库并自动迁移（根目录 -> data/）
 OLD_DB_PATH = os.path.join(os.path.dirname(__file__), "resume_system.db")
-if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
-    import shutil
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    shutil.copy2(OLD_DB_PATH, DB_PATH)
-    print(f"已自动迁移旧数据库到: {DB_PATH}")
+if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH) and 'data' in DB_PATH:
+    try:
+        shutil.copy2(OLD_DB_PATH, DB_PATH)
+        st.sidebar.success("✅ 已自动迁移旧数据")
+    except Exception as e:
+        st.sidebar.error(f"⚠️ 数据迁移失败: {e}")
 
-# 确保数据目录存在
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 # =======================================================
 
 # 配置切换：本地 Ollama vs 云端 API
@@ -55,7 +97,7 @@ def call_deepseek_api(messages, temperature=0.1):
     }
     
     payload = {
-        "model": "deepseek-chat",  # 或 deepseek-reasoner
+        "model": "deepseek-chat",
         "messages": messages,
         "temperature": temperature,
         "max_tokens": 4096
