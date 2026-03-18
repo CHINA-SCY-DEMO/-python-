@@ -827,23 +827,23 @@ def show_main_app():
                 st.error(f"图表加载失败: {e}")
         
       if st.session_state.show_export:
-    try:
-        df = get_user_export_data(st.session_state.user_id)
-        if not df.empty:
-            # 关键修复：使用 utf-8-sig 添加 BOM，解决 Excel 乱码
-            csv = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="⬇️ 下载CSV报表",
-                data=csv,
-                file_name=f"resume_report_{st.session_state.username}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            st.caption(f"共 {len(df)} 条记录")
-        else:
-            st.warning("暂无数据可导出")
-    except Exception as e:
-        st.error(f"导出失败: {e}")
+        try:
+            df = get_user_export_data(st.session_state.user_id)
+            if not df.empty:
+                # 关键修复：使用 utf-8-sig 添加 BOM，解决 Excel 乱码
+                csv = df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    label="⬇️ 下载CSV报表",
+                    data=csv,
+        file_name=f"resume_report_{st.session_state.username}_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                st.caption(f"共 {len(df)} 条记录")
+            else:
+                st.warning("暂无数据可导出")
+        except Exception as e:
+            st.error(f"导出失败: {e}")
         
         with st.expander("🗑️ 高级操作", expanded=False):
             st.warning("⚠️ 危险区域", icon="⚠️")
