@@ -27,6 +27,27 @@ from contextlib import contextmanager#数据库
 
 # ==================== Supabase PostgreSQL 配置 ====================
 
+
+st.title("数据库连接测试")
+
+try:
+    conn = psycopg2.connect(st.secrets["SUPABASE_DB_URL"])
+    st.success("✅ 数据库连接成功！")
+    
+    # 测试查询
+    c = conn.cursor()
+    c.execute("SELECT version();")
+    version = c.fetchone()
+    st.write(f"PostgreSQL 版本: {version[0]}")
+    conn.close()
+    
+    st.info("现在可以正常运行完整应用了")
+    
+except Exception as e:
+    st.error(f"❌ 连接失败: {e}")
+    st.code(st.secrets["SUPABASE_DB_URL"], language=None)  # 检查 URL 是否正确
+    st.stop()
+
 @contextmanager
 def get_db_connection():
     """安全的数据库连接上下文管理器"""
