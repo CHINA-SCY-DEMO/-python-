@@ -21,55 +21,291 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# ==================== 智能数据库路径配置（适配 Streamlit Cloud） ====================
-def get_db_path():
-    env_path = os.getenv("RESUME_DB_PATH")
-    if env_path:
-        try:
-            dir_path = os.path.dirname(env_path)
-            if dir_path:
-                os.makedirs(dir_path, exist_ok=True)
-            return env_path
-        except PermissionError:
-            st.warning(f"⚠️ 无法访问环境变量指定的路径: {env_path}，将使用临时目录")
-    
-    is_streamlit_cloud = os.getenv("STREAMLIT_SHARING") or os.getenv("STREAMLIT_CLOUD")
-    if is_streamlit_cloud:
-        tmp_path = "/tmp/resume_system.db"
-        if 'showed_cloud_warning' not in st.session_state:
-            st.info("☁️ Streamlit Cloud 模式：数据保存在临时目录，应用重启后数据会丢失。", icon="ℹ️")
-            st.session_state.showed_cloud_warning = True
-        return tmp_path
-    
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager#数据库
+
+# ==================== Supabase PostgreSQL 配置 ====================
+
+@contextmanager
+def get_db_connection():
+    """安全的数据库连接上下文管理器"""
+    conn = None
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        db_dir = os.path.join(base_dir, "data")
-        os.makedirs(db_dir, exist_ok=True)
-        
-        gitignore_path = os.path.join(db_dir, ".gitignore")
-        if not os.path.exists(gitignore_path):
-            try:
-                with open(gitignore_path, 'w') as f:
-                    f.write("*.db\n*.sqlite3\n*.sqlite\n")
-            except:
-                pass
-        
-        return os.path.join(db_dir, "resume_system.db")
-    except PermissionError:
-        st.warning("⚠️ 无法写入项目目录，使用系统临时目录", icon="⚠️")
-        return "/tmp/resume_system.db"
+        conn = psycopg2.connect(st.secrets["SUPABASE_DB_URL"])
+        yield conn
+    except Exception as e:
+        st.error(f"数据库连接失败，请检查 Secrets 配置: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
 
-DB_PATH = get_db_path()
+def init_db():
+    """初始化数据库表（首次运行会自动创建）"""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            
+            # 用户表
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(50) UNIQUE NOT NULL,
+                    password VARCHAR(64) NOT NULL,
+                    email VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 简历记录表 - 使用 JSONB 存储结构化数据（比 TEXT 更高效）
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS resumes (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    filename VARCHAR(255),
+                    content TEXT,
+                    structured_data JSONB,
+                    score INTEGER,
+                    total_score INTEGER,
+                    score_details JSONB,
+                    analysis JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 优化记录表
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS optimizations (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    resume_id INTEGER REFERENCES resumes(id) ON DELETE CASCADE,
+                    job_desc TEXT,
+                    optimized_content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 创建索引加速查询（Supabase 大数据量时很重要）
+            c.execute('CREATE INDEX IF NOT EXISTS idx_resumes_user_id ON resumes(user_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_resumes_created ON resumes(created_at DESC)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_optimizations_user ON optimizations(user_id)')
+            
+            conn.commit()
+            print("✅ 数据库表初始化成功")
+    except Exception as e:
+        st.error(f"数据库初始化失败: {e}")
 
-try:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    old_db_path = os.path.join(base_dir, "resume_system.db")
-    if os.path.exists(old_db_path) and DB_PATH != old_db_path and os.path.exists(os.path.dirname(DB_PATH)):
-        if not os.path.exists(DB_PATH) or os.path.getsize(old_db_path) > os.path.getsize(DB_PATH):
-            shutil.copy2(old_db_path, DB_PATH)
-            st.success("✅ 已自动迁移旧数据库数据")
-except Exception as e:
-    pass
+# 密码加密（与你原代码一致）
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# 用户注册（适配 PostgreSQL）
+def register_user(username, password, email):
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            hashed_pw = hash_password(password)
+            # 使用 %s 作为占位符（PostgreSQL 标准，SQLite 用 ?）
+            c.execute(
+                "INSERT INTO users (username, password, email) VALUES (%s, %s, %s) RETURNING id",
+                (username, hashed_pw, email)
+            )
+            user_id = c.fetchone()[0]
+            conn.commit()
+            return True, "注册成功！", user_id
+    except psycopg2.IntegrityError:
+        # 唯一约束冲突（用户名已存在）
+        return False, "用户名已存在", None
+    except Exception as e:
+        return False, f"注册失败: {str(e)}", None
+
+# 用户登录
+def login_user(username, password):
+    try:
+        with get_db_connection() as conn:
+            # 使用 RealDictCursor 让结果像字典一样访问
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            hashed_pw = hash_password(password)
+            c.execute(
+                "SELECT id, username FROM users WHERE username=%s AND password=%s",
+                (username, hashed_pw)
+            )
+            result = c.fetchone()
+            if result:
+                return True, result['id'], result['username']
+            return False, None, None
+    except Exception as e:
+        st.error(f"登录查询失败: {e}")
+        return False, None, None
+
+# 保存简历（JSONB 自动处理字典转换）
+def save_resume(user_id, filename, content, structured_data, score, total_score, score_details, analysis):
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO resumes 
+                (user_id, filename, content, structured_data, score, total_score, score_details, analysis) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                user_id, filename, content,
+                json.dumps(structured_data, ensure_ascii=False),  # JSONB 需要字符串
+                score, total_score,
+                json.dumps(score_details, ensure_ascii=False),
+                json.dumps(analysis, ensure_ascii=False)
+            ))
+            resume_id = c.fetchone()[0]
+            conn.commit()
+            return resume_id
+    except Exception as e:
+        st.error(f"保存简历失败: {e}")
+        return None
+
+# 获取用户简历历史
+def get_user_resumes(user_id):
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute("""
+                SELECT id, filename, score, total_score, created_at::text 
+                FROM resumes 
+                WHERE user_id=%s 
+                ORDER BY created_at DESC
+            """, (user_id,))
+            results = c.fetchall()
+            # 转换为与原代码兼容的元组格式
+            return [(r['id'], r['filename'], r['score'], r['total_score'], r['created_at']) for r in results]
+    except Exception as e:
+        st.error(f"获取历史记录失败: {e}")
+        return []
+
+# 获取单条简历详情
+def get_resume_detail(resume_id):
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            c.execute("""
+                SELECT content, structured_data, score, total_score, score_details, analysis 
+                FROM resumes 
+                WHERE id=%s
+            """, (resume_id,))
+            result = c.fetchone()
+            if result:
+                return {
+                    'content': result['content'],
+                    'structured_data': result['structured_data'] if result['structured_data'] else {},
+                    'score': result['score'],
+                    'total_score': result['total_score'],
+                    'score_details': result['score_details'] if result['score_details'] else {},
+                    'analysis': result['analysis'] if result['analysis'] else []
+                }
+            return None
+    except Exception as e:
+        st.error(f"获取详情失败: {e}")
+        return None
+
+# 保存优化记录
+def save_optimization(user_id, resume_id, job_desc, optimized_content):
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO optimizations (user_id, resume_id, job_desc, optimized_content) 
+                VALUES (%s, %s, %s, %s)
+            """, (user_id, resume_id, job_desc, optimized_content))
+            conn.commit()
+    except Exception as e:
+        st.error(f"保存优化记录失败: {e}")
+
+# 数据概览统计（新增，用于侧边栏）
+def get_user_stats(user_id):
+    """获取用户统计数据"""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor(cursor_factory=RealDictCursor)
+            # 总简历数
+            c.execute("SELECT COUNT(*) as count FROM resumes WHERE user_id=%s", (user_id,))
+            total_count = c.fetchone()['count']
+            
+            # 平均完成度
+            c.execute("""
+                SELECT AVG(CAST(score AS FLOAT)/NULLIF(total_score,0)*100) as avg_pct 
+                FROM resumes 
+                WHERE user_id=%s
+            """, (user_id,))
+            avg_result = c.fetchone()
+            avg_pct = avg_result['avg_pct'] if avg_result and avg_result['avg_pct'] else 0
+            
+            # 本月新增
+            current_month = datetime.now().strftime("%Y-%m")
+            c.execute("""
+                SELECT COUNT(*) as count FROM resumes 
+                WHERE user_id=%s AND TO_CHAR(created_at, 'YYYY-MM')=%s
+            """, (user_id, current_month))
+            month_count = c.fetchone()['count']
+            
+            # 最近活动时间
+            c.execute("SELECT MAX(created_at) as last_time FROM resumes WHERE user_id=%s", (user_id,))
+            last_time = c.fetchone()['last_time']
+            
+            return total_count, avg_pct, month_count, last_time
+    except Exception as e:
+        st.error(f"统计失败: {e}")
+        return 0, 0, 0, None
+
+# 获取趋势数据（用于图表）
+def get_user_trend(user_id, limit=20):
+    try:
+        with get_db_connection() as conn:
+            df = pd.read_sql_query("""
+                SELECT created_at, 
+                       ROUND(CAST(score AS FLOAT)/NULLIF(total_score,0)*100, 1) as percentage
+                FROM resumes 
+                WHERE user_id=%s 
+                ORDER BY created_at ASC 
+                LIMIT %s
+            """, conn, params=(user_id, limit))
+            return df
+    except Exception as e:
+        st.error(f"趋势数据获取失败: {e}")
+        return pd.DataFrame()
+
+# 导出数据为 DataFrame
+def get_user_export_data(user_id):
+    try:
+        with get_db_connection() as conn:
+            df = pd.read_sql_query("""
+                SELECT filename, score, total_score, 
+                       ROUND(CAST(score AS FLOAT)/NULLIF(total_score,0)*100, 1) as completion_rate,
+                       created_at
+                FROM resumes 
+                WHERE user_id=%s 
+                ORDER BY created_at DESC
+            """, conn, params=(user_id,))
+            return df
+    except Exception as e:
+        st.error(f"导出数据获取失败: {e}")
+        return pd.DataFrame()
+
+# 清理用户数据
+def clear_user_data(user_id):
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM optimizations WHERE user_id=%s", (user_id,))
+            c.execute("DELETE FROM resumes WHERE user_id=%s", (user_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        st.error(f"清理数据失败: {e}")
+        return False
+
+# 初始化（应用启动时运行）
+init_db()
+
+
 
 # =======================================================
 
