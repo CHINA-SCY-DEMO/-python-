@@ -5,7 +5,7 @@ import pdfplumber
 import docx
 import re
 import json
-import os
+import os  # 修复：确保这行没有缩进，与前面对齐
 import tempfile
 import requests
 import textwrap
@@ -23,6 +23,15 @@ from reportlab.pdfbase.ttfonts import TTFont
 # ==================== 数据库路径配置 ====================
 # 支持通过环境变量 RESUME_DB_PATH 自定义路径，默认使用当前目录下的 data 文件夹
 DB_PATH = os.getenv("RESUME_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "resume_system.db"))
+
+# 检查是否存在旧版数据库（当前目录下的 resume_system.db），提示用户迁移
+OLD_DB_PATH = os.path.join(os.path.dirname(__file__), "resume_system.db")
+if os.path.exists(OLD_DB_PATH) and not os.path.exists(DB_PATH):
+    import shutil
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    shutil.copy2(OLD_DB_PATH, DB_PATH)
+    print(f"已自动迁移旧数据库到: {DB_PATH}")
+
 # 确保数据目录存在
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 # =======================================================
