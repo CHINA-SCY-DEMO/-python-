@@ -236,11 +236,12 @@ def get_user_stats(user_id):
         return 0, 0, 0, None
 
 def get_user_trend(user_id, limit=20):
+    """获取趋势数据（修复 PostgreSQL 类型兼容）"""
     try:
         with get_db_connection() as conn:
             df = pd.read_sql_query("""
                 SELECT created_at, 
-                       ROUND(CAST(score AS FLOAT)/NULLIF(total_score,0)*100, 1) as percentage
+                       ROUND((CAST(score AS NUMERIC)/NULLIF(total_score,0)*100)::NUMERIC, 1) as percentage
                 FROM resumes 
                 WHERE user_id=%s 
                 ORDER BY created_at ASC 
@@ -252,11 +253,12 @@ def get_user_trend(user_id, limit=20):
         return pd.DataFrame()
 
 def get_user_export_data(user_id):
+    """获取导出数据（修复 PostgreSQL 类型兼容）"""
     try:
         with get_db_connection() as conn:
             df = pd.read_sql_query("""
                 SELECT filename, score, total_score, 
-                       ROUND(CAST(score AS FLOAT)/NULLIF(total_score,0)*100, 1) as completion_rate,
+                       ROUND((CAST(score AS NUMERIC)/NULLIF(total_score,0)*100)::NUMERIC, 1) as completion_rate,
                        TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI') as created_at
                 FROM resumes 
                 WHERE user_id=%s 
@@ -266,7 +268,7 @@ def get_user_export_data(user_id):
     except Exception as e:
         st.error(f"导出数据获取失败: {e}")
         return pd.DataFrame()
-
+        
 def clear_user_data(user_id):
     try:
         with get_db_connection() as conn:
