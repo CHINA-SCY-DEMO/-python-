@@ -835,7 +835,7 @@ def show_main_app():
                 st.download_button(
                     label="⬇️ 下载CSV报表",
                     data=csv,
-        file_name=f"resume_report_{st.session_state.username}_{datetime.now().strftime('%Y%m%d')}.csv",
+                    file_name=f"resume_report_{st.session_state.username}_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv",
                     use_container_width=True
                 )
