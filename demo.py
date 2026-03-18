@@ -938,113 +938,69 @@ def show_main_app():
             st.session_state.username = None
             st.rerun()
         
-        st.markdown("---")
-        st.markdown("### 📊 我的数据概览")
+# 在 show_main_app() 函数中，替换原有的统计代码：
+
+st.markdown("---")
+st.markdown("### 📊 我的数据概览")
+
+try:
+    total_count, avg_pct, month_count, last_time = get_user_stats(st.session_state.user_id)
+    
+    metric_col1, metric_col2 = st.columns(2)
+    with metric_col1:
+        st.metric("📄 简历总数", total_count)
+    with metric_col2:
+        display_avg = f"{avg_pct:.1f}%" if avg_pct else "0%"
+        st.metric("⭐ 平均完成度", display_avg)
+    
+    if month_count:
+        st.caption(f"本月新增: {month_count} 份")
+    if last_time:
+        st.caption(f"最近活动: {last_time.strftime('%Y-%m-%d') if hasattr(last_time, 'strftime') else str(last_time)[:10]}")
         
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("""SELECT COUNT(*), AVG(CAST(score AS FLOAT)/total_score*100), MAX(created_at) 
-                        FROM resumes WHERE user_id=?""", 
-                     (st.session_state.user_id,))
-            total_count, avg_score_pct, last_time = c.fetchone()
-            current_month = datetime.now().strftime("%Y-%m")
-            c.execute("""SELECT COUNT(*) FROM resumes 
-                         WHERE user_id=? AND strftime('%Y-%m', created_at)=?""",
-                     (st.session_state.user_id, current_month))
-            month_count = c.fetchone()[0]
-            conn.close()
-            
-            metric_col1, metric_col2 = st.columns(2)
-            with metric_col1:
-                st.metric("📄 简历总数", int(total_count) if total_count else 0)
-            with metric_col2:
-                display_avg = f"{avg_score_pct:.1f}%" if avg_score_pct else "0%"
-                st.metric("⭐ 平均完成度", display_avg)
-            
-            if month_count:
-                st.caption(f"本月新增: {month_count} 份")
-            if last_time:
-                st.caption(f"最近活动: {last_time[:10]}")
-                
-        except Exception as e:
-            st.error(f"数据加载失败: {e}")
-        
-        st.markdown("### ⚡ 快捷操作")
-        
-        if 'show_trend' not in st.session_state:
-            st.session_state.show_trend = False
-        if 'show_export' not in st.session_state:
-            st.session_state.show_export = False
-            
-        col_q1, col_q2 = st.columns(2)
-        with col_q1:
-            if st.button("📈 评分趋势", use_container_width=True, key="btn_trend"):
-                st.session_state.show_trend = not st.session_state.show_trend
-                st.session_state.show_export = False
-        with col_q2:
-            if st.button("💾 导出数据", use_container_width=True, key="btn_export"):
-                st.session_state.show_export = not st.session_state.show_export
-                st.session_state.show_trend = False
-        
-        if st.session_state.show_trend:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                df = pd.read_sql_query("""
-                    SELECT created_at, 
-                           ROUND(CAST(score AS FLOAT)/total_score*100, 1) as percentage
-                    FROM resumes 
-                    WHERE user_id=? 
-                    ORDER BY created_at ASC 
-                    LIMIT 20""", conn, params=(st.session_state.user_id,))
-                conn.close()
-                if not df.empty and len(df) > 1:
-                    st.line_chart(df.set_index('created_at')['percentage'], use_container_width=True)
-                    st.caption("📉 最近20次分析完成度趋势")
-                else:
-                    st.info("📊 数据不足，至少需2份简历")
-            except Exception as e:
-                st.error(f"图表加载失败: {e}")
-        
-        if st.session_state.show_export:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                df = pd.read_sql_query("""
-                    SELECT filename, score, total_score, 
-                           ROUND(CAST(score AS FLOAT)/total_score*100, 1) as completion_rate,
-                           created_at
-                    FROM resumes 
-                    WHERE user_id=? 
-                    ORDER BY created_at DESC""", conn, params=(st.session_state.user_id,))
-                conn.close()
-                if not df.empty:
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ 下载CSV报表",
-                        data=csv,
-                        file_name=f"resume_report_{st.session_state.username}_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                    st.caption(f"共 {len(df)} 条记录")
-                else:
-                    st.warning("暂无数据可导出")
-            except Exception as e:
-                st.error(f"导出失败: {e}")
-        
-        with st.expander("🗑️ 高级操作", expanded=False):
-            st.warning("⚠️ 危险区域", icon="⚠️")
-            if st.button("清空所有历史记录", type="secondary", use_container_width=True):
-                confirm = st.checkbox("我确认删除所有数据", key="confirm_delete")
-                if confirm:
-                    conn = sqlite3.connect(DB_PATH)
-                    c = conn.cursor()
-                    c.execute("DELETE FROM resumes WHERE user_id=?", (st.session_state.user_id,))
-                    c.execute("DELETE FROM optimizations WHERE user_id=?", (st.session_state.user_id,))
-                    conn.commit()
-                    conn.close()
-                    st.success("✅ 已清空历史记录")
-                    st.rerun()
+except Exception as e:
+    st.error(f"数据加载失败: {e}")
+
+# ... 其他快捷操作代码保持不变，但使用新的趋势函数 ...
+
+if st.session_state.show_trend:
+    try:
+        df = get_user_trend(st.session_state.user_id)
+        if not df.empty and len(df) > 1:
+            st.line_chart(df.set_index('created_at')['percentage'], use_container_width=True)
+            st.caption("📉 最近20次分析完成度趋势")
+        else:
+            st.info("📊 数据不足，至少需2份简历")
+    except Exception as e:
+        st.error(f"图表加载失败: {e}")
+
+if st.session_state.show_export:
+    try:
+        df = get_user_export_data(st.session_state.user_id)
+        if not df.empty:
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ 下载CSV报表",
+                data=csv,
+                file_name=f"resume_report_{st.session_state.username}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            st.caption(f"共 {len(df)} 条记录")
+        else:
+            st.warning("暂无数据可导出")
+    except Exception as e:
+        st.error(f"导出失败: {e}")
+
+# 清理数据按钮
+with st.expander("🗑️ 高级操作", expanded=False):
+    st.warning("⚠️ 危险区域", icon="⚠️")
+    if st.button("清空所有历史记录", type="secondary", use_container_width=True):
+        confirm = st.checkbox("我确认删除所有数据", key="confirm_delete")
+        if confirm:
+            if clear_user_data(st.session_state.user_id):
+                st.success("✅ 已清空历史记录")
+                st.rerun()
         
         st.markdown("### 💡 智能提示")
         tips = [
