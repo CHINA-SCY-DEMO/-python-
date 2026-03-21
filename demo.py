@@ -8,7 +8,7 @@ import tempfile
 import requests
 import textwrap
 import time
-import random
+import re  # 添加正则表达式库
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Tuple
@@ -281,19 +281,13 @@ def clear_user_data(user_id):
         st.error(f"清理数据失败: {e}")
         return False
 
-# ==================== AI 配置（保持不变） ====================
+# ==================== AI 配置（DeepSeek API） ====================
 
-USE_LOCAL_OLLAMA = os.getenv("USE_LOCAL_OLLAMA", "false").lower() == "true"
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
-OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "deepseek-r1:14b"
-
 def call_ai_chat(messages, temperature=0.1):
-    if USE_LOCAL_OLLAMA:
-        return call_ollama_chat(messages, temperature)
-    else:
-        return call_deepseek_api(messages, temperature)
+    """统一调用 DeepSeek API"""
+    return call_deepseek_api(messages, temperature)
 
 def call_deepseek_api(messages, temperature=0.1):
     headers = {
@@ -319,28 +313,7 @@ def call_deepseek_api(messages, temperature=0.1):
         st.error(f"API 调用失败: {e}")
         return None
 
-def call_ollama_chat(messages, temperature=0.1):
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_ctx": 4096
-        }
-    }
-    try:
-        resp = requests.post(OLLAMA_CHAT_URL, json=payload, timeout=120)
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "")
-    except requests.exceptions.ConnectionError:
-        st.error("🚨 无法连接到Ollama服务，请确保：1. Ollama已安装 2. 运行 `ollama serve` 3. 已拉取模型 `ollama pull deepseek-r1:14b`")
-        return None
-    except Exception as e:
-        st.error(f"AI模型调用失败: {e}")
-        return None
-
-# ==================== 简历处理功能（保持不变） ====================
+# ==================== 简历处理功能 ====================
 
 import pdfplumber
 import docx
@@ -446,7 +419,8 @@ RESUME_PARSE_PROMPT = """
 5. 只输出JSON，不要输出markdown代码块标记
 """
 
-def parse_resume_with_ollama(resume_text, retries=3):
+def parse_resume_with_ai(resume_text, retries=3):
+    """调用 DeepSeek API 解析简历"""
     messages = [
         {"role": "system", "content": RESUME_PARSE_PROMPT},
         {"role": "user", "content": f"请解析以下简历文本：\n\n{resume_text}"}
@@ -539,6 +513,22 @@ def calculate_resume_score(structured_data):
              len(proj_list) * 4 + len(cert_list) * 3 + 1 + 2)
     return score, score_details, total
 
+def clean_markdown(text):
+    """清理 Markdown 标记，输出纯文本"""
+    if not text:
+        return text
+    # 去除加粗 **text**
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    # 去除斜体 *text*（排除列表项 * 符号）
+    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'\1', text)
+    # 去除标题标记 #
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    # 去除代码块 ```
+    text = re.sub(r'```\w*\n?', '', text)
+    # 去除多余空行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 def build_optimization_prompt(resume_text, job_desc):
     return f"""你是一位资深的猎头顾问，精通简历优化和职业规划。请根据我提供的【目标职位招聘要求】，帮我优化和完善我的【原始简历内容】。
 
@@ -589,7 +579,7 @@ def save_text_as_pdf(text, output_path):
             y -= line_height
     c.save()
 
-# ==================== Streamlit UI（保持不变） ====================
+# ==================== Streamlit UI ====================
 
 try:
     init_db()
@@ -663,7 +653,6 @@ def show_auth_page():
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        # 已删除 login-container div，解决空白框问题
         st.markdown("<h2 style='text-align: center; color: #333;'>📄 智能简历系统</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666;'>AI驱动的简历识别与优化</p>", unsafe_allow_html=True)
         
@@ -830,7 +819,6 @@ def show_main_app():
             try:
                 df = get_user_export_data(st.session_state.user_id)
                 if not df.empty:
-                    # 关键修复：使用 utf-8-sig 添加 BOM，解决 Excel 乱码
                     csv = df.to_csv(index=False).encode('utf-8-sig')
                     st.download_button(
                         label="⬇️ 下载CSV报表",
@@ -914,7 +902,7 @@ def show_main_app():
                     
                     if st.button("🤖 开始AI解析与评分", type="primary"):
                         with st.spinner("🧠 AI正在深度解析简历结构..."):
-                            structured_data = parse_resume_with_ollama(content)
+                            structured_data = parse_resume_with_ai(content)
                             score, score_details, total = calculate_resume_score(structured_data)
                             
                             st.session_state['current_structured_data'] = structured_data
@@ -989,7 +977,7 @@ def show_main_app():
                     st.success("文本提取成功")
                     if st.checkbox("同时保存到历史记录"):
                         with st.spinner("AI解析中..."):
-                            structured_data = parse_resume_with_ollama(content)
+                            structured_data = parse_resume_with_ai(content)
                             score, score_details, total = calculate_resume_score(structured_data)
                             resume_id = save_resume(
                                 st.session_state.user_id,
@@ -1015,8 +1003,9 @@ def show_main_app():
                         {"role": "user", "content": prompt}
                     ]
                     optimized_text = call_ai_chat(messages)
-                    optimized_text = clean_markdown(optimized_text)
                     if optimized_text:
+                        # 关键修复：清理 Markdown 星号标记
+                        optimized_text = clean_markdown(optimized_text)
                         st.session_state['optimized_text'] = optimized_text
                         st.session_state['optimization_done'] = True
                         if resume_id:
