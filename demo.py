@@ -1015,6 +1015,7 @@ def show_main_app():
                         {"role": "user", "content": prompt}
                     ]
                     optimized_text = call_ai_chat(messages)
+                    optimized_text = clean_markdown(optimized_text)
                     if optimized_text:
                         st.session_state['optimized_text'] = optimized_text
                         st.session_state['optimization_done'] = True
